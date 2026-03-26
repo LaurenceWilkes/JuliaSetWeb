@@ -120,9 +120,9 @@
               n++;
             }
 
-            let sm = f32(n) - log2(log2(dot(z, z)));
+            let sm = f32(n) - log2(log(dot(z, z)));
             var t = sm / f32(maxIter);
-            t = pow(t, 0.35);
+            t = pow(t, 0.4);
             t = smoothstep(0.0, 1.0, t);
             let invt = 1.0 - t;
             let red = 8.5 * invt * invt * invt * t;
