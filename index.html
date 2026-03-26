@@ -13,6 +13,7 @@
     <canvas></canvas>
     <script type="module">
       const canvas = document.querySelector("canvas");
+      canvas.style.touchAction = "none";
       const dpr = window.devicePixelRatio || 1;
       canvas.width = canvas.clientWidth * dpr;
       canvas.height = canvas.clientHeight * dpr;
@@ -191,7 +192,7 @@
 
       updateCanvas();
 
-      canvas.addEventListener("mousemove", (e) => {
+      canvas.addEventListener("pointermove", (e) => {
         const rect = canvas.getBoundingClientRect();
         const x = (e.clientX - rect.left) / rect.width;
         const y = (e.clientY - rect.top) / rect.height;
