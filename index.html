@@ -12,34 +12,37 @@
   <body>
     <canvas></canvas>
     <script type="module">
+      const zoomFactor = 1.2;
+
       const canvas = document.querySelector("canvas");
-      canvas.style.touchAction = "none";
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = canvas.clientWidth * dpr;
-      canvas.height = canvas.clientHeight * dpr;
+      const DPR = Math.min(2, window.devicePixelRatio || 1);
+      canvas.width = Math.floor(canvas.clientWidth * DPR);
+      canvas.height = Math.floor(canvas.clientHeight * DPR);
+      const uniformArray = new Float32Array([
+        canvas.width, canvas.height,
+        zoomFactor
+      ]);
 
-      const WIDTH = canvas.width;
-      const HEIGHT = canvas.height;
-
-      /// Check support for WebGPU
+      // Check support for WebGPU
       if (!navigator.gpu) { throw new Error("WebGPU not supported on this browser."); }
 
-      /// Create adapter ("representation of a specific piece of GPU hardware in your device")
+      // Request GPU adapter ("representation of a specific piece of GPU hardware in your device")
       const adapter = await navigator.gpu.requestAdapter();
       if (!adapter) { throw new Error("No appropriate GPUAdapter found."); }
 
-      /// Create device ("the main interface through which most interaction with the GPU happens")
+      // Create device ("the main interface through which most interaction with the GPU happens")
       const device = await adapter.requestDevice();
 
-      /// Create GPUCanvasContext
+      // Create GPUCanvasContext
       const context = canvas.getContext("webgpu");
       const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
       context.configure({
-        device: device,        // Needs to be configured with the device
-        format: canvasFormat,  // and the texture formate the canvas will use
+        device: device,        // Device and texture format are necessary
+        format: canvasFormat,
       });
 
-      /// Cell as an array of vertices (must be provided as a list of triangles)
+      // --- Buffers ---
+      // Full screen quad as an array of vertices (must be provided as a list of triangles)
       const vertices = new Float32Array([
       //   X,    Y,
         -1.0, -1.0, // Triangle 1
@@ -50,18 +53,14 @@
          1.0,  1.0,
         -1.0,  1.0,
       ]);
-
-      /// vertex buffer to contain vertex info
       const vertexBuffer = device.createBuffer({
-        label: "Cell vertices",
+        label: "Quad vertices",
         size: vertices.byteLength,
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
       });
-
-      /// Write vertex data to buffer
       device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices);
 
-      /// dictionary with vertex buffer layout information
+      // Vertex buffer layout information
       const vertexBufferLayout = {
         arrayStride: 8, // the number of bytes the GPU needs to skip forward in the buffer when it's looking for the next vertex
         attributes: [{
@@ -71,16 +70,15 @@
         }],
       };
 
-      /// Uniform buffer describing the resolution
-      const uniformArray = new Float32Array([WIDTH, HEIGHT]);
+      // Uniform buffer describing the resolution and zoom factor
       const uniformBuffer = device.createBuffer({
-        label: "Resolution Uniforms",
+        label: "Resolution and Zoom Uniforms",
         size: uniformArray.byteLength,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
       device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
 
-      /// Uniform buffer describing the mouse position
+      // Uniform buffer describing the mouse position
       const mouseArray = new Float32Array([0, 0]);
       const mouseBuffer = device.createBuffer({
         label: "Mouse Uniforms",
@@ -89,11 +87,12 @@
       });
       device.queue.writeBuffer(mouseBuffer, 0, mouseArray);
 
-      /// Cell shader written in WGSL ("similar to Rust")
-      const cellShaderModule = device.createShaderModule({
-        label: "Cell shader",
+      // --- Shader ---
+      // Julia shader written in WGSL ("similar to Rust")
+      const juliaShaderModule = device.createShaderModule({
+        label: "Julia shader",
         code: `
-          @group(0) @binding(0) var<uniform> resolution: vec2f;
+          @group(0) @binding(0) var<uniform> resolution_zoom: vec3f;
           @group(0) @binding(1) var<uniform> mouse: vec2f;
 
           @vertex
@@ -104,23 +103,26 @@
           @fragment
           fn fragmentMain(@builtin(position) pixel: vec4f) -> @location(0) vec4f {
             let maxIter: u32 = 1000;
-            let uv = pixel.xy / resolution;
-            let aspect = vec2f(resolution.x / resolution.y, 1.0);
-            var z = (2.0 * uv - 1.0) * aspect;
-            z *= 1.5;
+            let uv = pixel.xy / resolution_zoom.xy;
+            let aspect = vec2f(resolution_zoom.x / resolution_zoom.y, 1.0);
+            var z = (2.0 * uv - 1.0) * aspect; // Map pixel to complex plane with aspect correction
+            z *= resolution_zoom.z;
             var n: u32 = 0;
-            while n < maxIter {
-              var zr2 = z.x * z.x;
-              var zi2 = z.y * z.y;
+            while (n < maxIter) {
+              let zr2 = z.x * z.x;
+              let zi2 = z.y * z.y;
               if (zr2 + zi2 > 4.0) {
                 break;
               }
-              var zri = z.x * z.y;
+              let zri = z.x * z.y;
               z.x = zr2 - zi2 + mouse.x;
               z.y = 2.0 * zri + mouse.y;
               n++;
             }
 
+            if (n == maxIter) {
+              return vec4f(0, 0, 0, 1);
+            }
             let sm = f32(n) - log2(log(dot(z, z)));
             var t = sm / f32(maxIter);
             t = pow(t, 0.4);
@@ -135,17 +137,18 @@
         `
       });
 
-      /// Create a render pipeline ("controls how geometry is drawn")
-      const cellPipeline = device.createRenderPipeline({
-        label: "Cell pipeline",
+      // --- Pipeline ---
+      // Create a render pipeline ("controls how geometry is drawn")
+      const renderPipeline = device.createRenderPipeline({
+        label: "Render pipeline",
         layout: "auto",
         vertex: {
-          module: cellShaderModule,
+          module: juliaShaderModule,
           entryPoint: "vertexMain",
           buffers: [vertexBufferLayout]
         },
         fragment: {
-          module: cellShaderModule,
+          module: juliaShaderModule,
           entryPoint: "fragmentMain",
           targets: [{
             format: canvasFormat
@@ -153,10 +156,10 @@
         }
       });
 
-      /// Bind Group ("a collection of resources that you want to make accessible to your shader at the same time")
+      // Bind Group ("a collection of resources that you want to make accessible to your shader at the same time")
       const bindGroup = device.createBindGroup({
-        label: "Cell renderer bind group",
-        layout: cellPipeline.getBindGroupLayout(0),
+        label: "Julia renderer bind group",
+        layout: renderPipeline.getBindGroupLayout(0),
         entries: [{
           binding: 0,
           resource: { buffer: uniformBuffer }
@@ -166,11 +169,12 @@
         }],
       });
 
+      // --- Rendering ---
       function updateCanvas() {
-        /// Create encoder ("provides an interface for recording GPU commands")
+        // Create encoder ("provides an interface for recording GPU commands")
         const encoder = device.createCommandEncoder();
 
-        /// Render pass to clear canvas (record the command)
+        // Render pass to clear canvas (record the command)
         const pass = encoder.beginRenderPass({
           colorAttachments: [{
             view: context.getCurrentTexture().createView(),
@@ -179,25 +183,35 @@
             storeOp: "store",
           }]
         });
-        pass.setPipeline(cellPipeline);
+        pass.setPipeline(renderPipeline);
         pass.setVertexBuffer(0, vertexBuffer);
         pass.setBindGroup(0, bindGroup);
-        pass.draw(vertices.length / 2); // 6 vertices
+        pass.draw(vertices.length / 2);
         pass.end();
 
-        /// Produce and submit the command buffer (cannot be used again)
+        // Produce and submit the command buffer (cannot be used again)
         const commandBuffer = encoder.finish();
         device.queue.submit([commandBuffer]);
       }
 
-      updateCanvas();
+      function resize() {
+        canvas.width = Math.floor(canvas.clientWidth * DPR);
+        canvas.height = Math.floor(canvas.clientHeight * DPR);
+        uniformArray[0] = canvas.width;
+        uniformArray[1] = canvas.height;
+        device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
+        updateCanvas();
+      }
+
+      resize(); // calls updateCanvas
+      addEventListener("resize", resize);
 
       canvas.addEventListener("pointermove", (e) => {
         const rect = canvas.getBoundingClientRect();
         const x = (e.clientX - rect.left) / rect.width;
         const y = (e.clientY - rect.top) / rect.height;
-        mouseArray[0] = (2 * x - 1) * 1.5 * WIDTH / HEIGHT;
-        mouseArray[1] = (1 - 2 * y) * 1.5;
+        mouseArray[0] = (2 * x - 1) * zoomFactor * canvas.width / canvas.height; // Map mouse to parameter c (written to match shader with zoom factor)
+        mouseArray[1] = (1 - 2 * y) * zoomFactor;
         device.queue.writeBuffer(mouseBuffer, 0, mouseArray);
         updateCanvas();
       });
