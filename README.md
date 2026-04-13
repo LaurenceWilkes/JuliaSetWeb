@@ -9,4 +9,4 @@ This is based off the ["Your first WebGPU app"](https://codelabs.developers.goog
 Notes
 - The fractal is computed by a fragment shader on the GPU.
 - If WebGPU is not available, the page will throw an error.
-- The canvas automatically fills the entire viewport meaning <code style="color : orangered;">this may run slowly on larger monitors...</code>.
+- The canvas automatically fills the entire viewport meaning <span style="color:OrangeRed">this may run slowly on larger monitors...</span>.
